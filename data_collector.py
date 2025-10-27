@@ -1,70 +1,64 @@
-#!/usr/bin/env python
-
-# Copyright (c) 2019 Computer Vision Center (CVC) at the Universitat Autonoma de
-# Barcelona (UAB).
-#
-# This work is licensed under the terms of the MIT license.
-# For a copy, see <https://opensource.org/licenses/MIT>.
-
-
-import glob
-import os
-import sys
+import carla
 import random
 import time
 import numpy as np
-import carla
 import cv2
 
-IM_WIDTH= 640
-IM_HEIGHT= 480
+# Connect to CARLA
+client = carla.Client('localhost', 2000)
+client.set_timeout(10.0)
+world = client.get_world()
 
-def process_img(image):
-    i=np.array(image.raw_data)
-    #print(i.shape)
-    i2=i.reshape((IM_HEIGHT,IM_WIDTH,4))
-    i3=i2[:, :, :3]
-    cv2.imshow("",i3)
-    cv2.waitKey(1)
-    return i2/255.0
+# Get blueprints and spawn points
+bp_lib = world.get_blueprint_library()
+spawn_points = world.get_map().get_spawn_points()
 
-actor_list = []
-try: 
-    client = carla.Client('localhost', 2000)
-    client.set_timeout(10)
-    world=client.get_world()
+# Spawn a vehicle
+vehicle_bp = bp_lib.find('vehicle.lincoln.mkz_2020')
+vehicle = world.try_spawn_actor(vehicle_bp, random.choice(spawn_points))
+if vehicle is None:
+    raise RuntimeError("Failed to spawn vehicle!")
 
-    blueprint_library=world.get_blueprint_library()
-    #vehicle_bp -> bp
-    bp=blueprint_library.filter("model3")[0]
-    #for locating in specific area-> transform=world.get_map().get_spawn_points()[75]
+# Attach spectator to follow the car
+spectator = world.get_spectator()
+transform = carla.Transform(
+    vehicle.get_transform().transform(carla.Location(x=-4, z=2.5)),
+    vehicle.get_transform().rotation
+)
+spectator.set_transform(transform)
 
-    spawn_point=random.choice(world.get_map().get_spawn_points())
-    vehicle= world.spawn_actor(bp, spawn_point)
-    #...........................................
+# Create and attach RGB camera
+camera_bp = bp_lib.find('sensor.camera.rgb')
+camera_bp.set_attribute('image_size_x', '800')
+camera_bp.set_attribute('image_size_y', '600')
+camera_bp.set_attribute('fov', '90')
 
+camera_init_trans = carla.Transform(carla.Location(x=1.5, z=2.4))
+camera = world.spawn_actor(camera_bp, camera_init_trans, attach_to=vehicle)
 
-    vehicle.apply_control(carla.VehicleControl(throttle=1.0, steer=0.0))
-    actor_list.append(vehicle)
+# Shared dictionary for image data
+camera_data = {'image': np.zeros((600, 800, 4), dtype=np.uint8)}
 
-    #adding other sesnors is in the same way
-    cam_bp=blueprint_library.find("sensor.camera.rgb")
-    cam_bp.set_attribute("image_size_x",f"{IM_WIDTH}")
-    cam_bp.set_attribute("image_size_y",f"{IM_HEIGHT}")
-    cam_bp.set_attribute("fov","110")#normally 90
+# Callback for camera images
+def camera_callback(image, data_dict):
+    array = np.frombuffer(image.raw_data, dtype=np.uint8)
+    array = np.reshape(array, (image.height, image.width, 4))
+    data_dict['image'] = array
 
-    spawn_point= carla.Transform(carla.Location(x=2.5,z=0.7))
+camera.listen(lambda image: camera_callback(image, camera_data))
 
-    sensor= world.spawn_actor(cam_bp, spawn_point, attach_to= vehicle)
-    if not os.path.exists("output\\"):
-        os.mkdir("output\\")
-    actor_list.append(sensor)
-    #sensor.listen(lambda data: data.save_to_disk('output/%.6d.jpg' % data.frame))
-    sensor.listen(lambda data: process_img(data))
-    vehicle.set_autopilot(True)
-    time.sleep(5)
+# Enable autopilot
+vehicle.set_autopilot(True)
 
+# Display loop
+cv2.namedWindow('RGB Camera', cv2.WINDOW_AUTOSIZE)
+try:
+    while True:
+        img = camera_data['image']
+        cv2.imshow('RGB Camera', img)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 finally:
-    for actor in actor_list:
-        actor.destroy()
-
+    cv2.destroyAllWindows()
+    camera.stop()
+    vehicle.destroy()
