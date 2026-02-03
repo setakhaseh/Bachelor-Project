@@ -127,13 +127,14 @@ def heading_error(xr, yr, phi_r, xt, yt):
     global desired_heading
     desired_heading = np.arctan2(yt - yr, xt - xr)
     e_theta = wrap_to_pi(desired_heading - phi_r)
+    e_theta=round(e_theta,2)
     return e_theta
 
 #===================PID SETUP====================
 pid_v = PID(Kp=1, Ki=0.1, Kd=0.01, out_min=0, out_max=0.6)  # m/s
 #pre{slow:[3,1.2,0.06],[3,0.6,0.1]}
-pid_w = PID(Kp=3.2, Ki=0.4, Kd=0.2, out_min=-2.0, out_max=2.0)  # rad/s
-v_cmd_base=0.3
+pid_w = PID(Kp=4, Ki=0.0, Kd=0.6, out_min=-2.0, out_max=2.0)  # rad/s
+v_cmd_base=0.4
 v_cmd, w_cmd, w_cmd_prev = 0.0, 0.0, 0.0
 
 
@@ -287,7 +288,7 @@ try:
                         
 
                         #look aheads=3cm(slow),5(slow),8(better)
-                        LOOKAHEAD_IDX = 0.12
+                        LOOKAHEAD_IDX = 0.2
                         # پیدا کردن نزدیک‌ترین نقطه جلوتر از current_s
                         idx_la = np.searchsorted(s_traj, current_s + LOOKAHEAD_IDX)  # 5cm جلوتر
                         idx_la = min(idx_la, len(traj_d)-1)
@@ -303,12 +304,16 @@ try:
                         # v_cmd = pid_v.update(error_pos, dt)
                         v_base = 0.35
                         v_cmd = v_base + pid_v.update(error_pos, dt)
+                        w_base=0
 
                         w_cmd = -pid_w.update(e_theta, dt)
+                        if w_cmd<0 :
+                            w_base= -0.2
+
                         if abs(e_theta) > np.deg2rad(5):
                             w_cmd = w_cmd + math.copysign(0.2,w_cmd )
                         else:
-                            w_cmd = 0.7 * w_cmd_prev + 0.3 * w_cmd
+                            w_cmd = 0.7 * w_cmd_prev + 0.3 * w_cmd + w_base
                             w_cmd_prev = w_cmd
 
 
