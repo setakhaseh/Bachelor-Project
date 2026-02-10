@@ -63,18 +63,24 @@ class PID:
         self.Kp = Kp
         self.Ki = Ki
         self.Kd = Kd
-        self.i = 0
-        self.prev = 0
+        self.i = 0.0
+        self.prev = 0.0
         self.out_min = out_min
         self.out_max = out_max
 
+    def reset(self):
+        self.i = 0.0
+        self.prev = 0.0
+
     def update(self, e, dt):
         self.i += e * dt
-        d = (e - self.prev) / dt if dt > 1e-6 else 0
-        d = np.clip(d, -10, 10)  # محدود کردن مشتق
+        self.i = np.clip(self.i, -1.0, 1.0)   # anti-windup
+        d = (e - self.prev) / dt if dt > 1e-6 else 0.0
+        d = np.clip(d, -10.0, 10.0)
         self.prev = e
         u = self.Kp * e + self.Ki * self.i + self.Kd * d
-        return max(min(u, self.out_max), self.out_min)
+        return np.clip(u, self.out_min, self.out_max)
+
 
 pid_w = PID(4.0, 0.0, 0.6, -2.0, 2.0)
 
@@ -133,6 +139,8 @@ def compute_control_pf_hysteresis(decision, current_lane, x, y, phi,
                                   x_lane_target, obstacle_pos, dt):
     global lane_state, target_lane, v_cmd
     global lane_change_dir, lock_start_time
+    prev_state = lane_state
+
 
     # ================== Decision Logic ==================
     if decision == "CHANGE_LEFT" and target_lane > 1:
@@ -148,7 +156,6 @@ def compute_control_pf_hysteresis(decision, current_lane, x, y, phi,
     if lane_state == LANE_FOLLOW:
         if decision in ["CHANGE_LEFT", "CHANGE_RIGHT"]:
             lane_state = LANE_CHANGE
-            lane_change_dir = decision
 
     elif lane_state == LANE_CHANGE:
         if abs(x - x_lane_target) < ENTER_TOL:
@@ -158,27 +165,37 @@ def compute_control_pf_hysteresis(decision, current_lane, x, y, phi,
     elif lane_state == LANE_LOCKED:
         if time.time() - lock_start_time > LOCK_TIME:
             lane_state = LANE_FOLLOW
-            lane_change_dir = None
-
+    # ===== RESET PID IF STATE CHANGED =====
+    if lane_state != prev_state:
+        pid_w.reset()
     # ================== Controllers ==================
     v_out = v_cmd
 
     # ---------- FOLLOW / LOCKED ----------
     if lane_state in [LANE_FOLLOW, LANE_LOCKED]:
 
-        # ===== Frenet-like front tracking =====
-        x_target = x_lane_target
-        y_target = y + LOOKAHEAD_Y   # نقطه جلوتر روی مسیر مستقیم
+        # --- Frenet-like Lane Follow on Center Line ---
+        x_lane_center = lane_centers[target_lane]
 
-        desired_heading = math.atan2(
-            y_target - y,
-            x_target - x
-        )
+        # Frenet lateral error
+        d = x - x_lane_center
 
-        e_theta = wrap_to_pi(desired_heading - phi)
+        # Lookahead target (state-dependent)
+        LOOKAHEAD = 0.4
+        x_target = x - 0.8 * d
+        y_target = y + LOOKAHEAD
 
-        gain = 0.6 if lane_state == LANE_LOCKED else 1.0
-        w_cmd = -gain * pid_w.update(e_theta, dt)
+        # Desired heading
+        theta_des = math.atan2(y_target - y, x_target - x)
+        e_theta = wrap_to_pi(theta_des - phi)
+
+        # Combined error (Stanley-style)
+        k_d = 1.5 * v_cmd
+
+        e = e_theta + math.atan2(k_d * d, v_cmd + 0.05)
+
+        # Angular control
+        w_cmd = -pid_w.update(e, dt)
 
     # ---------- LANE_CHANGE (Potential Field) ----------
     else:
